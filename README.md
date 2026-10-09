@@ -295,8 +295,11 @@ npm install
 | `npm run build` | 按当前平台尽可能多地构建 |
 | `npm run typecheck` | TypeScript 类型检查 |
 | `npm run smoke` | 19 项端到端断言：握手、比例匹配、远端指令、预览帧、700 KiB 文件分块互传、心跳 |
+| `npm run verify:ui` | 27 项界面验证：用 CDP 驱动真实 Electron 窗口，断言布局/角标抽屉/预览像素，并把截图写到 `.podiumcast-out/shots/` |
 | `npm run serve:pages` | 本地预览 `index.html`，<http://127.0.0.1:8788/> |
 | `npm run clean` | 清理构建产物 |
+
+`npm run verify:ui` 会带上 `PODIUMCAST_FORCE_TEST_PATTERN=1`，让拍摄端忽略硬件摄像头、改画测试画面 —— 否则在构建机上「预览到底有没有出画面」是无法判断的（摄像头可能不存在，也可能对着黑屋子）。想在本地手动进入这个模式，设置同名环境变量即可。
 
 ### Android 工具链引导
 
