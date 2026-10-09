@@ -1,0 +1,212 @@
+# PodiumCast — multi-platform build and release.
+#
+# Three runners exist because no single platform can produce all ten artefacts:
+#
+#   windows-latest : 6 × NSIS installers (x64 / x86 / ARM64 × Cast / Stage)
+#   macos-14       : 2 × universal .dmg   — a dmg needs hdiutil + codesign, which only
+#                                            exist on macOS, so this runner is the *only*
+#                                            way these two files can be produced at all
+#   ubuntu-latest  : 2 × APK              — Android SDK + JDK, built by Gradle
+#
+# Artefacts are named exactly as 说明\交付物.xlsx requires, and every job uploads them under
+# those names so the release job can attach them without renaming anything.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keeps npm quiet about funding/audit noise in CI logs.
+  NPM_CONFIG_FUND: 'false'
+  NPM_CONFIG_AUDIT: 'false'
+  # `.npmrc` points Electron and the electron-builder toolsets at a China mirror, because
+  # those 100-150 MB archives come down at ~25 KB/s from GitHub on some networks. GitHub's own
+  # runners have direct, fast access to the canonical source, so the mirrors are overridden
+  # here — env vars win over project npmrc, and both tools prefer NPM_CONFIG_* first.
+  NPM_CONFIG_ELECTRON_MIRROR: 'https://github.com/electron/electron/releases/download/'
+  NPM_CONFIG_ELECTRON_BUILDER_BINARIES_MIRROR: 'https://github.com/electron-userland/electron-builder-binaries/releases/download/'
+  # Unsigned builds: without this electron-builder tries to discover a code-signing identity
+  # and fails the job when there is none.
+  CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+jobs:
+  # ---------------------------------------------------------------------------- checks
+  checks:
+    name: 类型检查与端到端冒烟测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 安装依赖
+        # No --ignore-scripts here: esbuild's postinstall is what places its platform binary,
+        # and the smoke test bundles the TypeScript sources with esbuild.
+        run: npm ci
+      - name: 类型检查
+        run: npm run typecheck
+      - name: 端到端冒烟测试（握手 / 比例匹配 / 远端指令 / 预览帧 / 文件互传）
+        run: npm run smoke
+
+  # ---------------------------------------------------------------------------- windows
+  windows:
+    name: Windows 安装包 (x64 / x86 / ARM64)
+    needs: checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 构建六个安装包
+        run: npm run build:windows
+        env:
+          # Unsigned build; without this electron-builder tries to discover a certificate.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: 校验产物文件名
+        shell: pwsh
+        run: |
+          $expected = @(
+            'PodiumCast-Cast-x64-installer.exe','PodiumCast-Cast-x32-installer.exe','PodiumCast-Cast-arm-installer.exe',
+            'PodiumCast-Stage-x64-installer.exe','PodiumCast-Stage-x32-installer.exe','PodiumCast-Stage-arm-installer.exe')
+          $missing = @()
+          foreach ($f in $expected) {
+            $p = Join-Path '交付物' $f
+            if (-not (Test-Path $p)) { $missing += $f } else { Write-Host ("OK  {0}  {1:N1} MB" -f $f, ((Get-Item $p).Length/1MB)) }
+          }
+          if ($missing.Count) { throw "缺少产物：$($missing -join ', ')" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            交付物/PodiumCast-Cast-x64-installer.exe
+            交付物/PodiumCast-Cast-x32-installer.exe
+            交付物/PodiumCast-Cast-arm-installer.exe
+            交付物/PodiumCast-Stage-x64-installer.exe
+            交付物/PodiumCast-Stage-x32-installer.exe
+            交付物/PodiumCast-Stage-arm-installer.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  # ------------------------------------------------------------------------------ macOS
+  macos:
+    name: macOS 安装包 (universal dmg)
+    needs: checks
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 构建两个 dmg（x64 + arm64 合并为 universal）
+        run: npm run build:macos -- --arch=universal
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: 校验产物
+        run: |
+          for f in PodiumCast-Cast-macos-installer.dmg PodiumCast-Stage-macos-installer.dmg; do
+            test -f "交付物/$f" || { echo "missing $f"; exit 1; }
+            ls -lh "交付物/$f"
+          done
+      - name: 挂载测试（确保 dmg 真的能被系统识别）
+        run: |
+          hdiutil attach -nobrowse -readonly "交付物/PodiumCast-Cast-macos-installer.dmg" -mountpoint /tmp/pc-dmg
+          ls /tmp/pc-dmg
+          hdiutil detach /tmp/pc-dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-installers
+          path: |
+            交付物/PodiumCast-Cast-macos-installer.dmg
+            交付物/PodiumCast-Stage-macos-installer.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------- android
+  android:
+    name: Android APK (Cast / Stage)
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: 安装 Android SDK 组件
+        # `sdkmanager` is on PATH after setup-android. Licences must be accepted before the
+        # components, otherwise the very first package fails with a licence error.
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          sdkmanager --list_installed
+      - run: npm ci
+      - name: '构建两个 APK（Gradle product flavour: cast / stage）'
+        run: npm run build:android
+      - name: 校验产物
+        run: |
+          for f in PodiumCast-Cast.apk PodiumCast-Stage.apk; do
+            test -f "交付物/$f" || { echo "missing $f"; exit 1; }
+            ls -lh "交付物/$f"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            交付物/PodiumCast-Cast.apk
+            交付物/PodiumCast-Stage.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------- release
+  release:
+    name: 发布到 GitHub Release
+    needs: [windows, macos, android]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: 汇总产物
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.apk' \) -exec cp {} release/ \;
+          ls -lh release
+      - name: 创建 Release 并上传
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          body: |
+            PodiumCast ${{ github.ref_name }} — 多平台摄像头投屏与拍摄控制套件。
+
+            **本项目由 AI 编写 (AI-generated project)。**
+
+            安装包均未做代码签名，安装时系统会提示"未知发布者"：
+            - Windows：SmartScreen → 更多信息 → 仍要运行
+            - macOS：右键 → 打开，或 `xattr -dr com.apple.quarantine "/Applications/PodiumCast Cast.app"`
+            - Android：允许安装未知来源应用
