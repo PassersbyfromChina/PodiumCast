@@ -130,10 +130,18 @@ export async function buildAndroid({ roleFilter, debug = false, minify = true } 
 
   const variant = debug ? 'Debug' : 'Release';
   const tasks = roles.map((r) => `assemble${r[0].toUpperCase()}${r.slice(1)}${variant}`);
-  const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
   console.log(`  · gradle ${tasks.join(' ')}`);
-  await run(gradlew, [...tasks, '--no-daemon', '--console=plain'],
-    { cwd: ANDROID_PROJECT, env, shell: process.platform === 'win32' });
+  if (process.platform === 'win32') {
+    // Node refuses to spawn a `.cmd`/`.bat` without a shell; the wrapper path is relative and
+    // contains no spaces, so a shell is safe here.
+    await run('gradlew.bat', [...tasks, '--no-daemon', '--console=plain'], { cwd: ANDROID_PROJECT, env, shell: true });
+  } else {
+    // `sh gradlew` rather than `./gradlew`: the Gradle wrapper's executable bit is not
+    // preserved by every checkout (it is lost entirely when the file is first committed from
+    // Windows), and a first CI run died on `spawn ./gradlew EACCES` because of exactly that.
+    // Invoking it through `sh` makes the build independent of the file mode.
+    await run('sh', ['gradlew', ...tasks, '--no-daemon', '--console=plain'], { cwd: ANDROID_PROJECT, env });
+  }
 
   const produced = [];
   for (const role of roles) {
