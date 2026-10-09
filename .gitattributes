@@ -1,0 +1,26 @@
+# Normalise line endings for text so a clone on any platform matches the committed sources.
+# Gradle's wrapper scripts and the NSIS/Java sources are the ones that care most.
+* text=auto eol=lf
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary assets: never touch their bytes.
+*.png  binary
+*.ico  binary
+*.icns binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.zip  binary
+*.apk  binary
+*.exe  binary
+*.dmg  binary
+*.keystore binary
+*.jar  binary
+
+# Keep the GitHub language stats honest: this is a TypeScript project that also ships Java,
+# not a vendored dump of web assets.
+apps/android/android/app/src/**/assets/public/** linguist-vendored
+index.html linguist-documentation

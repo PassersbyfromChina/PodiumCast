@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PodiumCast talks to its peer over plain WebSocket on the local network. There is no
+  certificate authority for 192.168.x.x, and the traffic never leaves the LAN/hotspot, so
+  cleartext is permitted for every host rather than allow-listed per subnet (the subnet is
+  whatever the venue's router hands out).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

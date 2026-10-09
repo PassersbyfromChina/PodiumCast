@@ -1,0 +1,21 @@
+{
+  "name": "podiumcast-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PodiumCast 桌面端外壳（Electron 主进程）。同一份代码在构建期被指定为 Cast 或 Stage 角色。",
+  "author": {
+    "name": "PassersbyfromChina",
+    "email": "159757459+PassersbyfromChina@users.noreply.github.com"
+  },
+  "license": "MIT",
+  "homepage": "https://passersbyfromchina.github.io/PodiumCast/",
+  "main": "dist/main.js",
+  "podiumcastRole": "cast",
+  "keywords": [
+    "podiumcast",
+    "camera-casting",
+    "electron",
+    "webcam",
+    "remote-control"
+  ]
+}

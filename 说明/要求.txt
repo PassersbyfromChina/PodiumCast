@@ -1,0 +1,13 @@
+项目本质：一个摄像头，两个预览，可选两个存储。
+
+预览在PodiumCast-Cast上显示，并且进行拍摄和回放工作，并且传至PodiumCast-Stage应用。第二个应用在大屏幕上显示，且可选启动操控的功能，操控PodiumCast-Cast应用进行拍摄（视频与录像）、变焦、回放等。视频文件默认存在PodiumCast-Cast应用，可以选择存在PodiumCast-Stage应用，也可以互相拉取。
+
+具体实现：
+（一：启动配置）PodiumCast-Cast应用打开时，读取可用的录制规格组合，包括色域、清晰度、比例、帧率等；检查PodiumCast-Stage应用是否工作。
+PodiumCast-Stage应用打开时，读取大屏幕的规格，包括比例、分辨率、帧率、色域等。检查PodiumCast-Cast应用是否在工作。第一次连接大屏时，匹配与大屏相同或最为接近的拍摄比例。
+（二：应用ui）黑色背景，不要太复杂的动画和高级视觉效果。
+PodiumCast-Cast应用：1、若录制比例并非完全匹配手机屏幕，帧率和分辨率、操控按键、设置按钮放在预览外的黑边（根据黑边大小决定按键显示行数），并且用户自己决定预览界面和按键的左右关系（预览比例过宽）或上下关系（预览比例过长）。2、若完全匹配，按键等悬浮在预览画面上。（以上功能都基于横屏）
+PodiumCast-Stage应用：1、把所有操控按键隐藏为一个小图标在左和右下角，需要时打开。2、部分ui和PodiumCast-Cast应用保持一致。
+（三：应用使用）1、PodiumCast-Cast应用和PodiumCast-Stage应用实时显示预览。2、在PodiumCast-Cast应用或者PodiumCast-Stage应用可开始拍照或录制。3、视频录制过程中可以变焦。4、可以回放视频和照片。回放时可以放大或改变倍速。
+
+源码、安装包全部上传到GitHub，并补齐about和keyword。在readme.md里说明该程序是ai所编。同时写一个index.html，作为GitHub pages，方便展示功能和下载（指向GitHub的下载连接），界面简单，分亮暗主题。

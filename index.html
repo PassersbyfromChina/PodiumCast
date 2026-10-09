@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PodiumCast · 多平台摄像头投屏与拍摄控制</title>
+<meta name="description" content="PodiumCast 是一套多平台摄像头投屏与拍摄控制工具：PodiumCast-Cast 负责拍摄，PodiumCast-Stage 把同一路实时画面放大屏，并可选远程快门、录制、变焦与回放。支持本机、局域网、USB 数据线与手动输入地址，可跑在 Windows x64 / x86 / ARM64、macOS 与 Android。">
+<meta name="keywords" content="PodiumCast,摄像头投屏,拍摄控制,多平台,Windows,macOS,Android,局域网,USB,录屏,直播监看,camera casting">
+<meta name="author" content="PassersbyfromChina">
+<meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0c0e" id="pc-theme-color">
+<meta property="og:title" content="PodiumCast · 多平台摄像头投屏与拍摄控制">
+<meta property="og:description" content="一个摄像头，两个预览，可选两个存储。PodiumCast-Cast 拍摄，PodiumCast-Stage 放大屏并可远程操控，支持 Windows x64 / x86 / ARM64、macOS 与 Android。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://passersbyfromchina.github.io/PodiumCast/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='9'%20fill='%230b0c0e'/%3E%3Ccircle%20cx='16'%20cy='16'%20r='7'%20fill='%234c8dff'/%3E%3C/svg%3E">
+<script>
+(function () {
+  var stored = null;
+  try { stored = localStorage.getItem('podiumcast-theme'); } catch (e) {}
+  var dark = stored === 'dark' || stored === 'light'
+    ? stored === 'dark'
+    : window.matchMedia('(prefers-color-scheme: dark)').matches;
+  var root = document.documentElement;
+  root.dataset.theme = dark ? 'dark' : 'light';
+  root.style.colorScheme = dark ? 'dark' : 'light';
+  var btn = document.getElementById('theme-toggle');
+  if (btn) btn.setAttribute('aria-label', dark ? '切换到亮色主题' : '切换到暗色主题');
+})();
+</script>
+<style>
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0b0c0e;
+    --surface: #131519;
+    --surface-2: #181b20;
+    --border: #262a31;
+    --border-strong: #333944;
+    --text: #e9ecf1;
+    --text-dim: #a2aab6;
+    --text-faint: #868e9c;
+    --accent: #4c8dff;
+    --accent-hover: #6ba1ff;
+    --accent-soft: rgba(76, 141, 255, .14);
+    --btn-bg: #1c2029;
+    --btn-bg-hover: #232833;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #f7f8fa;
+    --surface-2: #f1f3f6;
+    --border: #e2e5ea;
+    --border-strong: #cdd3db;
+    --text: #16181c;
+    --text-dim: #555d69;
+    --text-faint: #6b7280;
+    --accent: #1f63d6;
+    --accent-hover: #174fb0;
+    --accent-soft: rgba(31, 99, 214, .10);
+    --btn-bg: #f1f3f6;
+    --btn-bg-hover: #e7eaef;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+      "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.72;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .wrap {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0 20px;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-hover); text-decoration: underline; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: .875em;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 5px;
+    word-break: break-all;
+  }
+
+  /* ---------- header ---------- */
+  .site-head {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .head-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 30px 0 26px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 27px;
+    line-height: 1.2;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+  .brand .mark { width: 30px; height: 30px; flex: none; display: block; }
+  .tagline {
+    margin: 10px 0 0;
+    color: var(--text-dim);
+    font-size: 15.5px;
+  }
+  .head-links { margin: 12px 0 0; font-size: 14px; color: var(--text-faint); }
+  .head-links .sep { margin: 0 8px; color: var(--border-strong); }
+
+  .theme-toggle {
+    position: relative;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+    background: var(--btn-bg);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .theme-toggle:hover { background: var(--btn-bg-hover); }
+  .theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .theme-toggle svg { width: 19px; height: 19px; display: block; }
+  .icon-sun, .icon-moon { display: none; }
+  :root[data-theme="dark"] .icon-sun { display: block; }
+  :root[data-theme="light"] .icon-moon { display: block; }
+  .theme-toggle::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 9px);
+    right: 0;
+    z-index: 5;
+    white-space: nowrap;
+    font-size: 12.5px;
+    line-height: 1.4;
+    padding: 5px 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    opacity: 0;
+    visibility: hidden;
+  }
+  .theme-toggle:hover::after,
+  .theme-toggle:focus-visible::after { opacity: 1; visibility: visible; }
+
+  /* ---------- sections ---------- */
+  main { padding-bottom: 40px; }
+  section { margin-top: 56px; }
+
+  h2 {
+    font-size: 21px;
+    line-height: 1.4;
+    font-weight: 650;
+    letter-spacing: -0.005em;
+    margin: 0 0 6px;
+  }
+  .section-note { margin: 0 0 20px; color: var(--text-dim); font-size: 15px; }
+
+  ul.plain { margin: 0; padding: 0; list-style: none; }
+  ul.plain li {
+    position: relative;
+    padding-left: 20px;
+    margin: 0 0 12px;
+    color: var(--text-dim);
+  }
+  ul.plain li::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: .68em;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  ul.plain strong { color: var(--text); font-weight: 600; }
+
+  /* ---------- product cards ---------- */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+  }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    padding: 22px 22px 20px;
+    display: flex;
+    flex-direction: column;
+  }
+  .card h3 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    font-weight: 650;
+    letter-spacing: -0.005em;
+  }
+  .card .role {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: var(--accent);
+    letter-spacing: .02em;
+  }
+  .card p { margin: 0 0 16px; color: var(--text-dim); font-size: 15px; }
+  .card .dl-label {
+    margin: auto 0 8px;
+    font-size: 13px;
+    color: var(--text-faint);
+  }
+  .card .dl-list { margin: 0; padding: 0; list-style: none; font-size: 14px; }
+  .card .dl-list li { margin: 0 0 7px; display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
+  .card .dl-list .file { background: none; border: 0; padding: 0; }
+  .card .dl-list a { text-decoration: none; }
+  .card .dl-list a:hover .file { text-decoration: underline; }
+  .card .muted { color: var(--text-faint); font-size: 13px; white-space: nowrap; }
+  .card .dl-note { margin: 12px 0 0; font-size: 13px; color: var(--text-faint); }
+
+  /* ---------- tables ---------- */
+  .table-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    -webkit-overflow-scrolling: touch;
+  }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 15px; }
+  th, td { text-align: left; padding: 11px 14px; vertical-align: middle; }
+  thead th:first-child, tbody td:first-child { padding-left: 18px; }
+  thead th:last-child, tbody td:last-child { padding-right: 18px; }
+  thead th {
+    background: var(--surface-2);
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: .03em;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--border);
+  }
+  tbody td { border-top: 1px solid var(--border); }
+  tbody tr:first-child td { border-top: none; }
+  tbody td:first-child { white-space: nowrap; }
+  tbody tr.group-start td { border-top: 1px solid var(--border-strong); }
+  tbody tr.group-start td:first-child { padding-top: 14px; }
+  tbody tr:target { background: var(--accent-soft); }
+
+  .tag {
+    display: inline-block;
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 0 7px;
+    border-radius: 5px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface-2);
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .tag-cast { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+
+  .file {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 13px;
+    word-break: break-all;
+  }
+  td.dl { white-space: nowrap; }
+  .dl-link { font-weight: 600; }
+  .dl-link::after { content: "\2193"; margin-left: 5px; font-weight: 400; }
+
+  .table-foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin-top: 14px;
+    font-size: 14.5px;
+    color: var(--text-dim);
+  }
+
+  /* ---------- faq ---------- */
+  .faq { border-top: 1px solid var(--border); }
+  details {
+    border-bottom: 1px solid var(--border);
+  }
+  summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 15px 34px 15px 0;
+    position: relative;
+    font-size: 16px;
+    font-weight: 550;
+    color: var(--text);
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after {
+    content: "";
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    margin-top: -5px;
+    border-right: 1.5px solid var(--text-faint);
+    border-bottom: 1.5px solid var(--text-faint);
+    transform: rotate(45deg);
+  }
+  details[open] > summary::after { transform: rotate(-135deg); margin-top: -1px; }
+  summary:hover { color: var(--accent); }
+  summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .answer { padding: 0 0 18px; color: var(--text-dim); font-size: 15px; }
+  .answer p { margin: 0 0 10px; }
+  .answer p:last-child { margin-bottom: 0; }
+  .answer ul { margin: 0 0 10px; padding-left: 20px; }
+
+  /* ---------- footer ---------- */
+  footer {
+    margin-top: 64px;
+    border-top: 1px solid var(--border);
+    padding: 26px 0 44px;
+    color: var(--text-faint);
+    font-size: 14px;
+  }
+  footer p { margin: 0 0 6px; }
+  footer .strong { color: var(--text-dim); }
+
+  /* ---------- responsive ---------- */
+  @media (max-width: 760px) {
+    .head-row { flex-direction: row; padding: 22px 0 20px; }
+    .brand { font-size: 23px; }
+    .brand .mark { width: 26px; height: 26px; }
+    .cards { grid-template-columns: minmax(0, 1fr); }
+    section { margin-top: 44px; }
+    .theme-toggle { width: 38px; height: 38px; }
+  }
+  @media (max-width: 620px) {
+    body { font-size: 15.5px; }
+    .wrap { padding: 0 14px; }
+    th, td { padding: 10px 11px; }
+    .file { font-size: 12.5px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="site-head">
+  <div class="wrap">
+    <div class="head-row">
+      <div>
+        <div class="brand">
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+            <rect width="32" height="32" rx="9" fill="var(--accent)"></rect>
+            <circle cx="16" cy="16" r="7.5" fill="var(--bg)"></circle>
+            <circle cx="16" cy="16" r="3.5" fill="var(--accent)"></circle>
+          </svg>
+          <span>PodiumCast</span>
+        </div>
+        <p class="tagline">一个摄像头，两个预览，可选两个存储 —— 拍摄端与放大屏端分体协作。</p>
+        <p class="head-links">
+          <a href="https://github.com/PassersbyfromChina/PodiumCast/releases">下载发布页</a>
+          <span class="sep">·</span>
+          <a href="https://github.com/PassersbyfromChina/PodiumCast">源代码</a>
+        </p>
+      </div>
+      <button type="button" id="theme-toggle" class="theme-toggle" aria-label="切换到亮色主题" data-tip="切换亮色 / 暗色主题">
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="4.4" fill="currentColor"></circle>
+          <g stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <line x1="12" y1="1.9" x2="12" y2="4.3"></line>
+            <line x1="12" y1="19.7" x2="12" y2="22.1"></line>
+            <line x1="1.9" y1="12" x2="4.3" y2="12"></line>
+            <line x1="19.7" y1="12" x2="22.1" y2="12"></line>
+            <line x1="4.9" y1="4.9" x2="6.6" y2="6.6"></line>
+            <line x1="17.4" y1="17.4" x2="19.1" y2="19.1"></line>
+            <line x1="4.9" y1="19.1" x2="6.6" y2="17.4"></line>
+            <line x1="17.4" y1="6.6" x2="19.1" y2="4.9"></line>
+          </g>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M20.4 14.5A8.6 8.6 0 0 1 9.5 3.6a8.8 8.8 0 1 0 10.9 10.9z" fill="currentColor"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section id="what">
+    <h2>这是什么</h2>
+    <p class="section-note">PodiumCast 把「拍」和「看」拆成两个独立应用，中间只走一条连接。</p>
+    <ul class="plain">
+      <li><strong>一个摄像头</strong>：摄像头只接在 <strong>PodiumCast-Cast</strong> 这一侧（手机或带摄像头的电脑），拍摄、录制、回放都在这里发生。</li>
+      <li><strong>两个预览</strong>：Cast 上有一个实时预览；<strong>PodiumCast-Stage</strong> 在大屏上同时显示同一路画面，画面是实时同步的，不是拷过去的文件。</li>
+      <li><strong>可选远程操控</strong>：Stage 可以只是一个「显示器」，也可以打开控制面板，远程驱动 Cast 拍照、开始/停止录制、变焦与回放。</li>
+      <li><strong>可选两个存储</strong>：录制文件默认存在 Cast；也可以改成存在 Stage，或者两边各存一份，任意一侧都能向另一侧拉取文件。</li>
+      <li><strong>首次连接自动配规格</strong>：第一次连上大屏时，Cast 会读取大屏的分辨率、比例、帧率与色域，挑选相同或最接近的拍摄比例，避免放大屏后出现黑边或裁切。</li>
+    </ul>
+  </section>
+
+  <section id="products">
+    <h2>两个应用</h2>
+    <p class="section-note">两端都需要安装：拍摄端跑在摄像头上，大屏端跑在要显示的机器上。可以装在同一台设备，也可以分装两台。</p>
+    <div class="cards">
+
+      <article class="card">
+        <h3>PodiumCast-Cast</h3>
+        <p class="role">拍摄端 / 摄像头侧</p>
+        <p>负责打开摄像头并维持实时预览，完成拍照、录像与回放，同时把画面推送给 Stage。录制规格（比例、分辨率、帧率、色域）在这里协商与切换；文件默认落盘在本机，也可以改存到 Stage 或两边同时保存。界面按横屏设计：当录制比例和屏幕比例不一致时，按键会自动排到预览外的黑边上，并允许你决定预览与按键的左右或上下关系。</p>
+        <p class="dl-label">下载 PodiumCast-Cast</p>
+        <ul class="dl-list">
+          <li><a href="#dl-cast-x64"><span class="file">PodiumCast-Cast-x64-installer.exe</span></a> <span class="muted">Windows x64</span></li>
+          <li><a href="#dl-cast-x32"><span class="file">PodiumCast-Cast-x32-installer.exe</span></a> <span class="muted">Windows x86 / 32 位</span></li>
+          <li><a href="#dl-cast-arm"><span class="file">PodiumCast-Cast-arm-installer.exe</span></a> <span class="muted">Windows on ARM</span></li>
+          <li><a href="#dl-cast-macos"><span class="file">PodiumCast-Cast-macos-installer.dmg</span></a> <span class="muted">macOS Universal</span></li>
+          <li><a href="#dl-cast-apk"><span class="file">PodiumCast-Cast.apk</span></a> <span class="muted">Android</span></li>
+        </ul>
+        <p class="dl-note">在上方列表里选好平台，页面会跳到下方下载表并高亮对应的那一行。</p>
+      </article>
+
+      <article class="card">
+        <h3>PodiumCast-Stage</h3>
+        <p class="role">大屏端 / 显示与控制侧</p>
+        <p>把 Cast 的实时预览铺到大屏幕上，用于监看、投影或现场大屏展示。启动时它会上报这块屏幕的比例、分辨率、帧率与色域，供 Cast 匹配录制规格。它默认把操控收成左下角和右下角的小图标，需要时再展开；展开后可以远程拍照、开始/停止录制、变焦，以及回放 Cast 上的照片和视频（支持放大与变速）。</p>
+        <p class="dl-label">下载 PodiumCast-Stage</p>
+        <ul class="dl-list">
+          <li><a href="#dl-stage-x64"><span class="file">PodiumCast-Stage-x64-installer.exe</span></a> <span class="muted">Windows x64</span></li>
+          <li><a href="#dl-stage-x32"><span class="file">PodiumCast-Stage-x32-installer.exe</span></a> <span class="muted">Windows x86 / 32 位</span></li>
+          <li><a href="#dl-stage-arm"><span class="file">PodiumCast-Stage-arm-installer.exe</span></a> <span class="muted">Windows on ARM</span></li>
+          <li><a href="#dl-stage-macos"><span class="file">PodiumCast-Stage-macos-installer.dmg</span></a> <span class="muted">macOS Universal</span></li>
+          <li><a href="#dl-stage-apk"><span class="file">PodiumCast-Stage.apk</span></a> <span class="muted">Android</span></li>
+        </ul>
+        <p class="dl-note">在上方列表里选好平台，页面会跳到下方下载表并高亮对应的那一行。</p>
+      </article>
+
+    </div>
+  </section>
+
+  <section id="downloads">
+    <h2>下载</h2>
+    <p class="section-note">全部安装包都在 GitHub Releases 上，链接始终指向最新一版。文件下载后即为该平台的安装包，无需额外依赖。</p>
+
+    <div class="table-scroll">
+      <table>
+        <caption class="visually-hidden" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap">PodiumCast 各平台安装包下载列表</caption>
+        <thead>
+          <tr>
+            <th scope="col">平台</th>
+            <th scope="col">架构</th>
+            <th scope="col">文件</th>
+            <th scope="col">下载</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="group-start" id="dl-cast-x64">
+            <td><span class="tag tag-cast">Cast</span> Windows</td>
+            <td>x64</td>
+            <td class="file">PodiumCast-Cast-x64-installer.exe</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Cast-x64-installer.exe">下载</a></td>
+          </tr>
+          <tr id="dl-cast-x32">
+            <td><span class="tag tag-cast">Cast</span> Windows</td>
+            <td>x86 / 32 位</td>
+            <td class="file">PodiumCast-Cast-x32-installer.exe</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Cast-x32-installer.exe">下载</a></td>
+          </tr>
+          <tr id="dl-cast-arm">
+            <td><span class="tag tag-cast">Cast</span> Windows</td>
+            <td>ARM64</td>
+            <td class="file">PodiumCast-Cast-arm-installer.exe</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Cast-arm-installer.exe">下载</a></td>
+          </tr>
+          <tr id="dl-cast-macos">
+            <td><span class="tag tag-cast">Cast</span> macOS</td>
+            <td>Universal</td>
+            <td class="file">PodiumCast-Cast-macos-installer.dmg</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Cast-macos-installer.dmg">下载</a></td>
+          </tr>
+          <tr id="dl-cast-apk">
+            <td><span class="tag tag-cast">Cast</span> Android</td>
+            <td>arm64-v8a</td>
+            <td class="file">PodiumCast-Cast.apk</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Cast.apk">下载</a></td>
+          </tr>
+          <tr class="group-start" id="dl-stage-x64">
+            <td><span class="tag">Stage</span> Windows</td>
+            <td>x64</td>
+            <td class="file">PodiumCast-Stage-x64-installer.exe</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Stage-x64-installer.exe">下载</a></td>
+          </tr>
+          <tr id="dl-stage-x32">
+            <td><span class="tag">Stage</span> Windows</td>
+            <td>x86 / 32 位</td>
+            <td class="file">PodiumCast-Stage-x32-installer.exe</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Stage-x32-installer.exe">下载</a></td>
+          </tr>
+          <tr id="dl-stage-arm">
+            <td><span class="tag">Stage</span> Windows</td>
+            <td>ARM64</td>
+            <td class="file">PodiumCast-Stage-arm-installer.exe</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Stage-arm-installer.exe">下载</a></td>
+          </tr>
+          <tr id="dl-stage-macos">
+            <td><span class="tag">Stage</span> macOS</td>
+            <td>Universal</td>
+            <td class="file">PodiumCast-Stage-macos-installer.dmg</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Stage-macos-installer.dmg">下载</a></td>
+          </tr>
+          <tr id="dl-stage-apk">
+            <td><span class="tag">Stage</span> Android</td>
+            <td>arm64-v8a</td>
+            <td class="file">PodiumCast-Stage.apk</td>
+            <td class="dl"><a class="dl-link" href="https://github.com/PassersbyfromChina/PodiumCast/releases/latest/download/PodiumCast-Stage.apk">下载</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="table-foot">
+      <span><a href="https://github.com/PassersbyfromChina/PodiumCast/releases">查看全部版本与更新日志</a></span>
+      <span><a href="https://github.com/PassersbyfromChina/PodiumCast">查看源代码</a></span>
+    </p>
+  </section>
+
+  <section id="transports">
+    <h2>连接方式</h2>
+    <p class="section-note">四种连接方式任选其一，功能完全一致；哪一端做 Cast、哪一端做 Stage 由你决定。</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">连接方式</th>
+            <th scope="col">什么时候用</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>本机（同一台设备）</td>
+            <td>Cast 和 Stage 装在同一台电脑上，一个大屏预览、一个监看窗口，延迟最低，不需要任何网络。</td>
+          </tr>
+          <tr>
+            <td>局域网</td>
+            <td>手机或另一台电脑做 Cast、大屏电脑做 Stage，两端连同一个路由器或热点，自动发现后一键连接。</td>
+          </tr>
+          <tr>
+            <td>USB 数据线</td>
+            <td>现场没有可用 Wi-Fi、或局域网不稳定时；用数据线连接两台设备并开启 USB 调试，走线缆比无线更稳。</td>
+          </tr>
+          <tr>
+            <td>手动输入地址</td>
+            <td>自动发现被防火墙、访客网络或网段隔离挡住时；在 Stage 上直接填 Cast 显示的地址与端口（默认 8765）。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="faq">
+    <h2>常见问题</h2>
+    <p class="section-note">下面几条是被问得最多的，答案尽量说实话。</p>
+    <div class="faq">
+
+      <details name="faq">
+        <summary>需要联网吗？</summary>
+        <div class="answer">
+          <p>不需要。PodiumCast 只在你的本机、局域网或 USB 线缆之间通信：同一台设备走回环地址，两台设备走路由器的内网，USB 走 <code>adb reverse</code> 把端口映射到本机回环。</p>
+          <p>整个过程不连接任何服务器，也没有账号、登录或云端中转。公网断开时照常工作；只有「下载安装包」和「检查更新」这两件事需要访问 GitHub。</p>
+        </div>
+      </details>
+
+      <details name="faq">
+        <summary>为什么 Windows 安装包会提示「未知发布者」？</summary>
+        <div class="answer">
+          <p>因为安装包没有做代码签名（EV 代码签名证书需要按年付费）。Windows SmartScreen 对没有签名的程序一律给出这个提示，它说明的是「没有签名」，不是「检测到病毒」。</p>
+          <p>继续安装的办法：在提示窗口点「更多信息」，再点「仍要运行」；如果已经被 SmartScreen 拦下，可以在文件上右键 → 属性 → 勾选「解除锁定」后重试。介意风险的话，可以先用 GitHub 上的源码自行构建。</p>
+        </div>
+      </details>
+
+      <details name="faq">
+        <summary>macOS 首次打开提示「无法验证开发者」怎么办？</summary>
+        <div class="answer">
+          <p>同样是签名与公证的问题：应用没有经过 Apple 公证，Gatekeeper 默认不放行。两种处理方式任选：</p>
+          <ul>
+            <li>在「访达」里按住 <code>Control</code> 点击（或右键）应用图标 → 选「打开」→ 在弹窗里再点一次「打开」。之后就可以正常双击启动。</li>
+            <li>或者在终端里执行 <code>xattr -d com.apple.quarantine /Applications/PodiumCast-Stage.app</code>，把隔离标记去掉（路径按实际安装位置改）。</li>
+          </ul>
+          <p>如果系统提示「已损坏」，基本都是隔离标记导致的，上面第二条命令即可解决。</p>
+        </div>
+      </details>
+
+      <details name="faq">
+        <summary>录制文件存在哪里？</summary>
+        <div class="answer">
+          <p>默认存在 PodiumCast-Cast 这一端，也就是接摄像头的设备上：Windows 与 macOS 版存在应用的媒体库里（可在应用内直接打开所在文件夹），Android 版存在应用私有目录，不写系统相册。</p>
+          <p>也可以把存储目标改成 PodiumCast-Stage，或者两边各存一份，在 Cast 或 Stage 的设置里切换即可。文件名按「类型 + 时间戳」生成，不会互相覆盖。</p>
+        </div>
+      </details>
+
+      <details name="faq">
+        <summary>手机与电脑之间能互传文件吗？</summary>
+        <div class="answer">
+          <p>可以。连接建立后，任意一端都能向另一端拉取文件：在 Stage 上可以查看 Cast 的媒体库并把照片、视频拉到大屏这台机器；反过来 Cast 也能从 Stage 拉回文件。</p>
+          <p>传输和实时预览共用同一条连接，走的还是本机 / 局域网 / USB 通道，不经过云端。传大文件时建议用 USB 数据线或 5 GHz 局域网。</p>
+        </div>
+      </details>
+
+      <details name="faq">
+        <summary>支持哪些平台和录制规格？</summary>
+        <div class="answer">
+          <p>平台：Windows x64、Windows x86（32 位）、Windows on ARM、macOS（Intel 与 Apple 芯片通用）、Android。</p>
+          <p>录制规格取决于设备摄像头实际支持的组合，比例、分辨率、帧率与色域都是协商出来的：Cast 打开时枚举可用组合，Stage 打开时上报大屏规格，第一次连接会挑相同或最接近的比例。之后你可以手动改，手动选择会一直生效。</p>
+        </div>
+      </details>
+
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="strong">本项目由 AI 编写（AI-generated project）。</p>
+    <p>以 MIT License 开源发布，可自由使用、修改与分发。</p>
+    <p>
+      <a href="https://github.com/PassersbyfromChina/PodiumCast">github.com/PassersbyfromChina/PodiumCast</a>
+      <span class="sep"> · </span>
+      <a href="https://github.com/PassersbyfromChina/PodiumCast/releases">Releases</a>
+    </p>
+    <p>完整源码与全部安装包都放在 GitHub 上，本页只做功能说明与下载入口。</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById('theme-toggle');
+  var meta = document.getElementById('pc-theme-color');
+
+  function current() {
+    return root.dataset.theme === 'dark' ? 'dark' : 'light';
+  }
+
+  function apply(theme) {
+    var dark = theme === 'dark';
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    root.style.colorScheme = dark ? 'dark' : 'light';
+    if (meta) meta.setAttribute('content', dark ? '#0b0c0e' : '#ffffff');
+    if (btn) {
+      btn.setAttribute('aria-label', dark ? '切换到亮色主题' : '切换到暗色主题');
+      btn.setAttribute('data-tip', dark ? '切换亮色主题' : '切换暗色主题');
+    }
+  }
+
+  apply(current());
+
+  if (btn) {
+    btn.addEventListener('click', function () {
+      var next = current() === 'dark' ? 'light' : 'dark';
+      apply(next);
+      try { localStorage.setItem('podiumcast-theme', next); } catch (e) {}
+    });
+  }
+
+  try {
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    var follow = function (e) {
+      var stored = null;
+      try { stored = localStorage.getItem('podiumcast-theme'); } catch (err) {}
+      if (stored !== 'dark' && stored !== 'light') apply(e.matches ? 'dark' : 'light');
+    };
+    if (typeof mq.addEventListener === 'function') mq.addEventListener('change', follow);
+    else if (typeof mq.addListener === 'function') mq.addListener(follow);
+  } catch (e) {}
+})();
+</script>
+
+</body>
+</html>

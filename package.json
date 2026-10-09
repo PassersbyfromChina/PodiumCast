@@ -1,0 +1,73 @@
+{
+  "name": "podiumcast",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PodiumCast — 多平台摄像头投屏与拍摄控制套件（Cast 拍摄端 + Stage 大屏端），覆盖 Windows x64/x86/ARM64、macOS 与 Android。",
+  "keywords": [
+    "podiumcast",
+    "camera",
+    "webcam",
+    "camera-casting",
+    "screen-cast",
+    "live-preview",
+    "remote-control",
+    "photo-booth",
+    "multicam",
+    "electron",
+    "capacitor",
+    "android",
+    "windows",
+    "macos",
+    "lan",
+    "usb",
+    "ad-hoc",
+    "photography",
+    "videography",
+    "typescript"
+  ],
+  "license": "MIT",
+  "author": "PassersbyfromChina",
+  "homepage": "https://passersbyfromchina.github.io/PodiumCast/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PassersbyfromChina/PodiumCast.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PassersbyfromChina/PodiumCast/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "apps/android"
+  ],
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build:web": "node scripts/build-web.mjs",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "build:windows": "node scripts/build-windows.mjs",
+    "build:macos": "node scripts/build-macos.mjs",
+    "build:android": "node scripts/build-android.mjs",
+    "build": "node scripts/build-all.mjs",
+    "dev:cast": "node scripts/dev.mjs cast",
+    "dev:stage": "node scripts/dev.mjs stage",
+    "serve:pages": "node scripts/serve-pages.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:ui": "node scripts/verify-ui.mjs",
+    "smoke": "node scripts/smoke-test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "electron": "36.9.5",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2",
+    "ws": "^8.18.0"
+  },
+  "allowScripts": {
+    "electron@36.9.5": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.24.2": true
+  }
+}
