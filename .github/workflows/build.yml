@@ -155,13 +155,29 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@v3
+        continue-on-error: true
       - name: 安装 Android SDK 组件
-        # `sdkmanager` is on PATH after setup-android. Licences must be accepted before the
-        # components, otherwise the very first package fails with a licence error.
+        # `android-actions/setup-android` is attempted first for its PATH/ANDROID_HOME wiring,
+        # but it is NOT relied upon: on current SDK repositories it fails while looking for the
+        # long-removed legacy `tools` package ("Failed to find package 'tools'"), which is
+        # exactly what broke the first CI run. ubuntu-latest already ships the Android SDK, so
+        # sdkmanager is located and driven directly, and the action's result is ignored.
+        #
+        # `sdkmanager` needs JAVA_HOME, which actions/setup-java set above.
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
-          sdkmanager --list_installed
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1 || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::在 $SDK 下找不到 sdkmanager"
+            ls -la "$SDK" || true
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          "$SDKMANAGER" --list_installed
       - run: npm ci
       - name: '构建两个 APK（Gradle product flavour: cast / stage）'
         run: npm run build:android
