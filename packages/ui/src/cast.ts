@@ -17,15 +17,21 @@ import {
   CastSession,
   DEFAULT_CAST_PORT,
   aspectLabel,
-  computeLetterbox,
-  fitAxis,
   formatBytes,
   formatDuration,
   matchSpec,
   mediaFileName,
   pickVideoMime,
+  planLayout,
+  buildPickerModel,
+  describeSpec,
+  resolutionLabel,
+  resolveSpec,
   type DisplaySpec,
+  type LayoutPlan,
+  type LayoutPreference,
   type MediaFile,
+  type SpecSelection,
   type RecordingSpec,
   type StorageTarget,
 } from '@podiumcast/core';
@@ -39,17 +45,8 @@ import { ElectronHostChannel, hasElectronHost } from './platform/electron-channe
 import { WebHostChannel, type HostChannel, type HostInfo } from './platform/host';
 import './styles.css';
 
-type LayoutMode = 'auto' | 'split-h' | 'split-v' | 'overlay';
-
-/**
- * What `auto` resolved to for the current spec and window size.
- *
- * Kept separate from `settings.layout` on purpose: `auto` is a standing instruction ("work it
- * out from the letterbox"), not a one-shot guess. Overwriting the stored preference with the
- * resolved value would silently turn the app into "always split-v" the first time the window
- * happened to be taller than the capture.
- */
-let resolvedLayout: Exclude<LayoutMode, 'auto'> = 'overlay';
+/** What the user picked in Settings; `auto` resolves per-window in `planLayout`. */
+type LayoutMode = LayoutPreference;
 
 interface Settings {
   layout: LayoutMode;
@@ -58,6 +55,10 @@ interface Settings {
   previewQuality: number;
   storageTarget: StorageTarget;
   videoBitrate: number;
+  /** Flip the local preview *and* the stream sent to the Stage, like a phone's front camera. */
+  mirrorPreview: boolean;
+  /** Flip the recorded file too. Off by default so the file matches what the lens saw. */
+  mirrorCapture: boolean;
 }
 
 const SETTINGS_KEY = 'podiumcast.cast.settings';
@@ -77,6 +78,8 @@ function loadSettings(): Settings {
     previewQuality: 0.6,
     storageTarget: 'cast',
     videoBitrate: 12_000_000,
+    mirrorPreview: false,
+    mirrorCapture: false,
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -145,6 +148,9 @@ async function startCast(): Promise<void> {
     h('span', { class: 'dot' }), h('span', { class: 'mono', text: '00:00' }));
   const recTime = recBadge.lastElementChild as HTMLElement;
   const peerChip = h('span', { class: 'chip' }, h('span', { class: 'dot' }), h('span', { text: '0 台大屏' }));
+  // One flex child rather than two: the pair wraps together, which keeps the rec badge glued to
+  // the connection chip instead of drifting onto its own row in a narrow band.
+  const statusCluster = h('div', { class: 'bar-status' }, recBadge, peerChip);
 
   // ================================================================ CONTROLS
 
@@ -163,84 +169,124 @@ async function startCast(): Promise<void> {
     iconButton('zoomIn', '放大', { cls: 'ghost icon', onclick: () => { void camera.setZoom(camera.getZoom().value * 1.4) } }),
   );
 
-  const toolbar = h('div', { class: 'bar-row' }, shutterBtn, recordBtn, libBtn, setBtn);
+  const mirrorPreviewBtn = iconButton('mirror', '镜像预览', {
+    pressed: settings.mirrorPreview,
+    onclick: () => setMirrorPreview(!settings.mirrorPreview),
+  });
+  const mirrorCaptureBtn = iconButton('mirror', '镜像录制', {
+    pressed: settings.mirrorCapture,
+    onclick: () => setMirrorCapture(!settings.mirrorCapture),
+  });
+
+  const toolbar = h('div', { class: 'bar-row' }, shutterBtn, recordBtn, mirrorPreviewBtn, libBtn, setBtn);
 
   /**
-   * Rebuilds the control surface for the current layout.
+   * Places the three control groups for the current plan.
    *
    * 要求.txt 二-2: a perfect aspect match floats the controls over the picture; otherwise they
    * live in the black band so nothing covers the frame.
+   *
+   * The readout is the one block that moves. A vertical band on a phone in landscape is about
+   * 70 px wide — enough for one column of 38 px buttons, but not for a monitor-style status
+   * readout as well. Rather than letting it force the band to scroll (which is how the buttons
+   * went missing in the first release), the readout floats along the top of the picture and the
+   * band keeps only what needs to be hit with a thumb.
    */
   function rebuildBars(): void {
     clear(bar);
     clear(floatLayer);
-    if (resolvedLayout === 'overlay') {
-      bar.hidden = true;
-      floatLayer.hidden = false;
-      root.dataset.layout = 'overlay';
+
+    const readoutInBar = plan.mode === 'split-v' || (plan.mode === 'split-h' && plan.density !== 'compact');
+    const floating = plan.mode === 'overlay' || !readoutInBar;
+    floatLayer.hidden = !floating;
+
+    if (floating) {
       floatLayer.append(
-        h('div', { class: 'float-top' }, readout, recBadge, h('div', { class: 'spacer' }), peerChip),
-        h('div', { class: 'float-bottom' }, zoomRail, toolbar),
+        h('div', { class: 'float-top' }, readout, h('div', { class: 'spacer' }), statusCluster),
       );
+    }
+
+    if (plan.mode === 'overlay') {
+      bar.hidden = true;
+      floatLayer.append(h('div', { class: 'float-bottom' }, zoomRail, toolbar));
       return;
     }
+
     bar.hidden = false;
-    floatLayer.hidden = true;
-    bar.append(readout, recBadge, peerChip, zoomRail, toolbar);
+    bar.append(...(readoutInBar ? [readout, statusCluster] : [statusCluster]), zoomRail, toolbar);
+  }
+
+  // ================================================================ MIRROR
+
+  /**
+   * Mirrors the local preview *and* the stream sent to the Stage.
+   *
+   * Two independent switches on purpose (cast and stage mirror separately):
+   *   · `mirrorPreview` — what you and the big screen see. What a phone's front camera does.
+   *   · `mirrorCapture` — what lands in the file. Off by default, because a mirrored recording
+   *     is a creative choice, not a default.
+   * A third, on the Stage, flips only that screen's copy of the picture.
+   */
+  function applyPreviewTransform(): void {
+    const z = camera.getZoom();
+    const zoom = z.hardware ? 1 : z.value;
+    const flip = settings.mirrorPreview ? -1 : 1;
+    video.style.transform = `scale(${zoom * flip}, ${zoom})`;
+  }
+
+  function setMirrorPreview(on: boolean): void {
+    settings.mirrorPreview = on;
+    saveSettings(settings);
+    applyPreviewTransform();
+    mirrorPreviewBtn.setAttribute('aria-pressed', String(on));
+    toaster.show(on ? '预览已镜像（本机与大屏一致）' : '预览镜像已关闭', 'info');
+    session.patchState({ mirrorPreview: on });
+  }
+
+  function setMirrorCapture(on: boolean): void {
+    settings.mirrorCapture = on;
+    saveSettings(settings);
+    toaster.show(on ? '录制的视频与照片也会镜像' : '录制不再镜像', 'info');
+    session.patchState({ mirrorCapture: on });
   }
 
   // ================================================================ LAYOUT
 
   let currentSpec: RecordingSpec | null = null;
+  let plan: LayoutPlan = planLayout(null, 1, 1, 'auto');
 
   /**
-   * Turns the recording aspect plus the screen it is shown on into a concrete layout.
+   * Turns the recording aspect plus the window it is shown in into a concrete layout.
    *
-   * `--bar-minor` is the band thickness in CSS pixels and `--bar-slots` is how many control
-   * rows/columns fit inside it — that number is exactly "根据黑边大小决定按键显示行数".
+   * All the arithmetic lives in `planLayout()` (packages/core/src/specs.ts) so it can be unit
+   * tested and so the axis rule exists in exactly one place. The first release inlined a
+   * backwards axis calculation here, which put the controls where there was no black band on
+   * every non-16:9 screen and crushed the preview.
+   *
+   * `--bar-slots` is how many control rows/columns the band can hold — the "根据黑边大小决定
+   * 按键显示行数" number — and `data-density` turns it into a concrete UI tier.
    */
   function applyLayout(): void {
-    const screenW = window.innerWidth;
-    const screenH = window.innerHeight;
-    const box = computeLetterbox(currentSpec, screenW, screenH, 56);
-    const screenRatio = screenW / screenH;
-    const exact = currentSpec
-      ? Math.abs(currentSpec.ratio - screenRatio) / Math.max(currentSpec.ratio, screenRatio) <= 0.005
-      : true;
-    const naturalAxis = fitAxis(currentSpec, screenW, screenH);
+    const screenW = Math.max(1, window.innerWidth);
+    const screenH = Math.max(1, window.innerHeight);
 
-    const preference: LayoutMode = settings.layout;
-    resolvedLayout = preference === 'auto'
-      ? (exact ? 'overlay' : (naturalAxis === 'width' ? 'split-h' : 'split-v'))
-      : preference;
-    const mode = resolvedLayout;
+    plan = planLayout(currentSpec, screenW, screenH, settings.layout);
 
-    // The band can only host the controls if it is actually wide enough; otherwise we reserve
-    // space and shrink the preview, which is what "用户自己决定左右/上下关系" implies.
-    const MIN_BAND = 156;
-    if (mode === 'split-h') {
-      const band = Math.max(box.bandLeft, box.bandRight, MIN_BAND);
-      const size = Math.round(Math.min(band, screenW * 0.34));
-      root.dataset.layout = 'split-h';
-      if (naturalAxis === 'width') delete root.dataset.side;
-      else root.dataset.side = 'right';
-      root.style.setProperty('--bar-minor', `${size}px`);
-      root.style.setProperty('--bar-slots', String(Math.max(1, Math.floor(size / 56))));
-    } else if (mode === 'split-v') {
-      const band = Math.max(box.bandTop, box.bandBottom, MIN_BAND);
-      const size = Math.round(Math.min(band, screenH * 0.34));
-      root.dataset.layout = 'split-v';
-      if (naturalAxis === 'height') delete root.dataset.side;
-      else root.dataset.side = 'bottom';
-      root.style.setProperty('--bar-minor', `${size}px`);
-      root.style.setProperty('--bar-slots', String(Math.max(1, Math.floor(size / 56))));
+    root.dataset.layout = plan.mode;
+    root.dataset.density = plan.density;
+    if (plan.mode === 'overlay') {
+      delete root.dataset.side;
+      root.style.removeProperty('--bar-minor');
+      root.style.setProperty('--bar-slots', '0');
     } else {
-      root.dataset.layout = 'overlay';
+      root.dataset.side = plan.side;
+      root.style.setProperty('--bar-minor', `${plan.band}px`);
+      root.style.setProperty('--bar-slots', String(plan.slots));
     }
 
     rebuildBars();
-    // Keep the preview honest: show the real digital-zoom crop.
-    video.style.transform = `scale(${camera.getZoom().hardware ? 1 : camera.getZoom().value})`;
+    // Keep the preview honest: show the real digital-zoom crop (and mirror if asked).
+    applyPreviewTransform();
   }
 
   // ================================================================ PREVIEW PUSH
@@ -272,7 +318,7 @@ async function startCast(): Promise<void> {
         previewCanvas.width = w;
         previewCanvas.height = h2;
       }
-      camera.drawFrame(previewCtx, w, h2);
+      camera.drawFrame(previewCtx, w, h2, settings.mirrorPreview);
       const blob = await new Promise<Blob | null>((resolve) => previewCanvas.toBlob(resolve, 'image/jpeg', settings.previewQuality));
       if (blob && session.getPeers().length) {
         const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -300,7 +346,7 @@ async function startCast(): Promise<void> {
 
   async function capturePhoto(): Promise<void> {
     try {
-      const photo = await camera.capturePhoto(0.95);
+      const photo = await camera.capturePhoto(0.95, settings.mirrorCapture);
       const name = mediaFileName('photo', 'image/jpeg');
       const handle = await store.beginWrite(name, 'photo', {
         mime: 'image/jpeg', width: photo.width, height: photo.height, createdAt: Date.now(),
@@ -320,7 +366,7 @@ async function startCast(): Promise<void> {
     if (recorder) return;
     try {
       const mime = pickVideoMime();
-      recorder = camera.createRecorder(mime, settings.videoBitrate);
+      recorder = camera.createRecorder(mime, settings.videoBitrate, settings.mirrorCapture);
       const spec = currentSpec;
       const name = mediaFileName('video', mime);
       recordHandle = await store.beginWrite(name, 'video', {
@@ -483,22 +529,105 @@ async function startCast(): Promise<void> {
     }
   }
 
+  /**
+   * The camera-style format picker: 比例 / 清晰度 / 帧率, three short rows.
+   *
+   * The previous release printed all ~28 hardware combinations as a scrollable list, which is
+   * how a spec sheet reads, not how a camera reads. Phone cameras show shape, size and
+   * smoothness, and grey out what the sensor cannot do at the current combination — this does
+   * the same, with the exhaustive list still one disclosure away for anyone who wants it.
+   */
+  let selection: SpecSelection = { aspect: null, height: 1080, fps: 30 };
+
   function renderSpecs(specs: RecordingSpec[]): void {
     clear(specList);
-    if (!specs.length) { specList.appendChild(h('div', { class: 'empty', text: '未读取到录制规格' })); return }
-    for (const spec of specs) {
-      specList.appendChild(h('button', {
-        class: 'spec-item', type: 'button',
-        'aria-pressed': String(spec.id === currentSpec?.id),
-        on: { click: () => { void applySpec(spec.id) } },
-      },
-        h('span', { class: 'tick' }, icon('link', 'ico sm')),
-        h('span', { class: 'spec-main' },
-          h('span', { class: 'spec-label', text: spec.label }),
-          h('span', { class: 'spec-sub', text: `${spec.id}${spec.native ? ' · 原生' : ''}` }),
-        ),
-      ));
+    if (!specs.length) {
+      specList.appendChild(h('div', { class: 'empty', text: '未读取到录制规格' }));
+      return;
     }
+
+    // Keep the selection pointing at something real after a camera change.
+    const model = buildPickerModel(specs, selection);
+    if (!model.resolutions.some((r) => r.value === selection.height)) {
+      selection.height = model.resolutions.find((r) => r.available)?.value ?? model.resolutions[0].value;
+    }
+    if (!model.frameRates.some((f) => f.value === selection.fps)) {
+      selection.fps = model.frameRates.find((f) => f.available)?.value ?? model.frameRates[0].value;
+    }
+
+    const picker = h('div', { class: 'picker' });
+    const row = (label: string, options: Array<{ value: string | number; label: string; available: boolean; active: boolean }>, onPick: (v: never) => void) => {
+      const seg = h('div', { class: 'seg wrap' });
+      for (const opt of options) {
+        seg.appendChild(h('button', {
+          type: 'button',
+          text: opt.label,
+          'aria-pressed': String(opt.active),
+          disabled: !opt.available,
+          title: opt.available ? opt.label : `${opt.label}（当前组合不支持）`,
+          on: { click: () => onPick(opt.value as never) },
+        }));
+      }
+      return h('div', { class: 'picker-row' }, h('span', { class: 'picker-label', text: label }), seg);
+    };
+
+    picker.append(
+      row('比例', [
+        { value: '__auto__', label: '自动', available: true, active: selection.aspect === null },
+        ...model.ratios.map((r) => ({ value: r.value, label: r.label, available: r.available, active: selection.aspect === r.value })),
+      ], (v: string) => { selection.aspect = v === '__auto__' ? null : v; void applySelection() }),
+      row('清晰度', model.resolutions.map((r) => ({ value: r.value, label: r.label, available: r.available, active: selection.height === r.value })),
+        (v: number) => { selection.height = v; void applySelection() }),
+      row('帧率', model.frameRates.map((f) => ({ value: f.value, label: `${f.label}fps`, available: f.available, active: selection.fps === f.value })),
+        (v: number) => { selection.fps = v; void applySelection() }),
+    );
+    specList.appendChild(picker);
+
+    const chosen = resolveSpec(specs, selection, displayRatio());
+
+    // One line that says what will actually be recorded, so the three rows never leave the
+    // user guessing whether the combination exists.
+    specList.appendChild(h('div', { class: 'picker-summary' },
+      h('span', { class: 'chip' }, h('span', { class: 'dot' }), h('span', { text: chosen ? describeSpec(chosen) : '无可用组合' })),
+      chosen && chosen.width * chosen.height < 1920 * 1080
+        ? h('span', { class: 'hint', text: '当前选择低于 1080P，大屏上可能偏软' })
+        : null,
+    ));
+
+    // Full hardware list, collapsed by default.
+    const details = h('details', { class: 'advanced' },
+      h('summary', { text: `高级：全部 ${specs.length} 种硬件规格` }),
+      h('div', { class: 'spec-list' },
+        ...specs.map((spec) => h('button', {
+          class: 'spec-item', type: 'button',
+          'aria-pressed': String(spec.id === currentSpec?.id),
+          on: { click: () => { void applySpec(spec.id) } },
+        },
+          h('span', { class: 'tick' }, icon('link', 'ico sm')),
+          h('span', { class: 'spec-main' },
+            h('span', { class: 'spec-label', text: spec.label }),
+            h('span', { class: 'spec-sub', text: `${spec.id}${spec.native ? ' · 原生' : ''}` }),
+          ),
+        )),
+      ),
+    );
+    specList.appendChild(details);
+  }
+
+  /** Applies whatever the three rows currently point at. */
+  async function applySelection(): Promise<void> {
+    const specs = session.getSpecs();
+    const chosen = resolveSpec(specs, selection, displayRatio());
+    if (!chosen) return;
+    await applySpec(chosen.id);
+    renderSpecs(specs);
+  }
+
+  /** The screen ratio the Cast should match when the user picks 自动. */
+  function displayRatio(): number {
+    const w = window.innerWidth;
+    const hgt = window.innerHeight;
+    return w > 0 && hgt > 0 ? w / hgt : 16 / 9;
   }
 
   function renderCameras(devices: CameraDevice[]): void {
@@ -561,9 +690,9 @@ async function startCast(): Promise<void> {
 
   settingsPanel.body.append(
     h('div', { class: 'field' },
-      h('span', { class: 'label', text: '录制规格（分辨率 · 帧率 · 比例 · 色域）' }),
+      h('span', { class: 'label', text: '拍摄规格' }),
       specList,
-      h('div', { class: 'hint', text: '大屏端首次连接时会自动选择与大屏比例相同或最接近的规格。' }),
+      h('div', { class: 'hint', text: '和大屏端首次连接时会自动匹配比例；「自动」即跟随大屏。选不出的组合会置灰。' }),
     ),
     h('div', { class: 'field' }, h('span', { class: 'label', text: '摄像头' }), cameraSelect),
     h('div', { class: 'field' },
@@ -575,6 +704,20 @@ async function startCast(): Promise<void> {
       h('span', { class: 'label', text: '界面布局（预览与按键的关系）' }),
       layoutSeg,
       h('div', { class: 'hint', text: '录制比例与屏幕不一致时，按键放在黑边中；行数/列数由黑边宽度自动决定。' }),
+    ),
+    h('div', { class: 'field' },
+      h('span', { class: 'label', text: '镜像' }),
+      h('div', { class: 'seg wrap' },
+        h('button', {
+          type: 'button', text: '镜像预览', 'aria-pressed': String(settings.mirrorPreview),
+          on: { click: () => setMirrorPreview(!settings.mirrorPreview) },
+        }),
+        h('button', {
+          type: 'button', text: '镜像录制', 'aria-pressed': String(settings.mirrorCapture),
+          on: { click: () => setMirrorCapture(!settings.mirrorCapture) },
+        }),
+      ),
+      h('div', { class: 'hint', text: '两个开关互相独立，且与大屏端的「显示镜像」也互相独立：拍摄端可以镜像预览而大屏不镜像，反之亦然。镜像录制默认关闭，因为录成镜像是一个创作选择。' }),
     ),
     h('div', { class: 'field' },
       h('span', { class: 'label', text: '预览推流' }),
@@ -618,6 +761,8 @@ async function startCast(): Promise<void> {
     // even when the camera rounded the resolution.
     const effective: RecordingSpec = { ...achieved, id: spec.id, label: spec.label };
     currentSpec = effective;
+    // Keep the three picker rows showing the mode that is actually live.
+    selection = { aspect: effective.aspect, height: effective.height, fps: effective.fps };
     session.setCurrentSpec(effective, session.getMatchNote());
     renderSpecs(specs);
     updateSpecLine();
@@ -633,7 +778,9 @@ async function startCast(): Promise<void> {
     const note = session.getMatchNote();
     specSubLine.textContent = [
       spec.colorSpace.toUpperCase(),
-      exact ? '满屏' : `面外黑边（${aspectLabel(spec.width, spec.height)} vs 屏幕 ${aspectLabel(window.innerWidth, window.innerHeight)}）`,
+      exact ? '满屏' : `画面外黑边（${aspectLabel(spec.width, spec.height)} vs 窗口 ${aspectLabel(window.innerWidth, window.innerHeight)}）`,
+      plan.mode === 'overlay' ? '' : `${plan.band}px 黑边 / ${plan.slots} ${plan.mode === 'split-h' ? '列' : '行'}`,
+      settings.mirrorPreview ? '预览已镜像' : '',
       note,
     ].filter(Boolean).join(' · ');
   }
@@ -727,7 +874,7 @@ async function startCast(): Promise<void> {
     zoom.value = String(z.value);
     zoom.max = String(z.max);
     session.patchState({ zoom: z.value, maxZoom: z.max });
-    video.style.transform = `scale(${z.hardware ? 1 : z.value})`;
+    applyPreviewTransform();
   });
   camera.events.on('devices', (devices) => renderCameras(devices));
 
@@ -743,10 +890,28 @@ async function startCast(): Promise<void> {
     if (ev.key === 'l' || ev.key === 'L') { ev.preventDefault(); openLibrary() }
     if (ev.key === 's' || ev.key === 'S') { ev.preventDefault(); settingsPanel.toggle() }
     if (ev.key === 'f' || ev.key === 'F') { ev.preventDefault(); void host.setFullscreen(!document.fullscreenElement) }
+    if (ev.key === 'm' || ev.key === 'M') { ev.preventDefault(); setMirrorPreview(!settings.mirrorPreview) }
   });
 
   window.addEventListener('resize', () => { applyLayout(); updateSpecLine() });
   window.addEventListener('beforeunload', () => { void session.stop() });
+
+  /**
+   * Android suspends the WebView when the app is backgrounded, and the `<video>` element can
+   * come back with a detached stream showing pure black — the "退出应用后预览消失" report.
+   * Re-attaching an already-live track is cheap and avoids re-opening the camera (which would
+   * re-prompt for permission on some devices).
+   */
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (camera.resume()) {
+      applyPreviewTransform();
+      return;
+    }
+    // The track really did end (camera unplugged, permission revoked while backgrounded):
+    // reopen it rather than leaving a dead black rectangle on screen.
+    if (!camera.isLive) void switchCamera(camera.activeDevice || '');
+  });
 
   // ================================================================ BOOT
 

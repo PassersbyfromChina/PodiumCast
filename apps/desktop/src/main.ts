@@ -43,6 +43,24 @@ const APP_VERSION = (() => {
   } catch { return '1.0.0' }
 })();
 
+/**
+ * Give each role its own identity, before anything reads a path.
+ *
+ * Electron keys **both** the user-data directory and the single-instance lock on the
+ * application name. Cast and Stage are built from one source tree and therefore shipped with
+ * the same `name` in package.json, so on Windows the second app to start found the lock already
+ * held, handed its arguments to the first instance and quit immediately — the "Windows 把 cast
+ * 和 stage 识别为了同一应用" report. They also shared one `userData` directory, which meant one
+ * settings blob, one media index and one window-state file between two different apps.
+ *
+ * Setting the name and the user-data path here fixes the lock, the settings, the device id and
+ * the window-state file in one move. It must happen before `app.whenReady()` and before any
+ * `app.getPath('userData')` call.
+ */
+const APP_NAME = ROLE === 'cast' ? 'PodiumCast Cast' : 'PodiumCast Stage';
+app.setName(APP_NAME);
+app.setPath('userData', path.join(app.getPath('appData'), APP_NAME));
+
 // ---------------------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------------------
@@ -371,11 +389,13 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'podiumcast', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: false } },
 ]);
 
-// Only one instance per role: a second Cast would fail to bind the port anyway.
+// One instance per role. This is a genuine per-role lock now that `userData` differs: a second
+// Cast would fail to bind port 8765 anyway, while a Stage must be able to run alongside a Cast.
 if (!app.requestSingleInstanceLock({ role: ROLE })) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    // A second Cast was launched: focus the running one instead of opening a duplicate.
     if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus() }
   });
 

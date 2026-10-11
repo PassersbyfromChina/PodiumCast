@@ -10,7 +10,7 @@
  *   通用     : fall back to a synthetic test pattern when no camera exists, so the Stage
  *              handshake, the preview pipe and CI smoke tests all work headless.
  */
-import { Emitter, buildSpecs, makeSpec, type ColorSpace, type RecordingSpec } from '@podiumcast/core';
+import { Emitter, makeSpec, standardModes, type ColorSpace, type RecordingSpec } from '@podiumcast/core';
 
 export interface CameraDevice {
   deviceId: string;
@@ -219,29 +219,24 @@ export class CameraController {
     const naturalHeight = settings.height ?? 720;
     const naturalFps = Math.round(settings.frameRate ?? 30);
 
-    const widths = caps.width ? [caps.width.max] : [];
-    const heights = caps.height ? [caps.height.max] : [];
-    // Common ladder, always offered so the user has something to pick even on a fixed-mode
-    // camera. Modes the hardware refuses are reported back by applySpec().
-    const ladder: Array<[number, number]> = [
-      [naturalWidth, naturalHeight], [3840, 2160], [2560, 1440], [1920, 1080], [1280, 720], [854, 480], [640, 360],
-    ];
-    for (const [w, h] of ladder) { widths.push(w); heights.push(h) }
+    // Built from a curated ladder of real camera modes rather than the cartesian product of the
+    // capability ranges. That product invented shapes no sensor has (the picker was offering
+    // 32:27 and 8:3), which is a large part of why choosing a format felt like reading a spec
+    // sheet. Capabilities are still honoured — they just *filter* the ladder instead of
+    // generating it.
+    const specs = standardModes({
+      maxWidth: caps.width?.max,
+      maxHeight: caps.height?.max,
+      maxFps: caps.frameRate?.max,
+      colorSpaces,
+      natural: { width: naturalWidth, height: naturalHeight, fps: naturalFps },
+      fpsCandidates: caps.frameRate
+        ? [60, 50, 30, 25, 24, 15].filter((f) => f <= caps.frameRate!.max).concat(Math.round(caps.frameRate.max))
+        : undefined,
+    });
 
-    const rates: number[] = [];
-    if (caps.frameRate) {
-      for (const r of [60, 50, 30, 25, 24, 15]) if (r <= caps.frameRate.max) rates.push(r);
-      rates.push(Math.round(caps.frameRate.max));
-    }
-    for (const r of [naturalFps, 60, 30, 15]) rates.push(r);
-
-    const specs = buildSpecs(widths, heights, rates, colorSpaces);
-    const native = makeSpec(naturalWidth, naturalHeight, naturalFps, colorSpaces[0], { native: true });
-    const withNative = specs.some((s) => s.id === native.id) ? specs : [native, ...specs];
-    // Cap the list: a 40-entry settings panel is not usable on a phone.
-    const trimmed = withNative.slice(0, 28);
-    this.currentSpec = trimmed.find((s) => s.native) ?? trimmed[0] ?? null;
-    return trimmed;
+    this.currentSpec = specs.find((s) => s.native) ?? specs[0] ?? null;
+    return specs;
   }
 
   /** Applies a recording spec. Returns the spec that was actually achieved. */
@@ -251,13 +246,18 @@ export class CameraController {
     // bonus the test pattern then genuinely reflects the chosen spec, which makes the spec
     // picker demonstrable on a machine with no camera.
     if (this.synthetic) {
-      const width = Math.max(160, Math.min(4096, Math.round(spec.width)));
-      const height = Math.max(90, Math.min(2304, Math.round(spec.height)));
-      if (this.synthetic.canvas.width !== width || this.synthetic.canvas.height !== height) {
-        this.synthetic.canvas.width = width;
-        this.synthetic.canvas.height = height;
+      // Capped at 1080p while keeping the requested aspect: the pattern exists to prove the
+      // signal chain, and repainting a 4K canvas at 30fps is real work on a phone for pixels
+      // that are only ever shown in a preview. `currentSpec` still reports what was asked for.
+      const canvas = this.synthetic.canvas;
+      const scale = Math.min(1, 1920 / Math.max(1, spec.width), 1080 / Math.max(1, spec.height));
+      const width = Math.max(160, Math.round(spec.width * scale));
+      const height = Math.max(90, Math.round(spec.height * scale));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
       }
-      this.currentSpec = { ...spec, width, height, ratio: width / height, aspect: spec.aspect };
+      this.currentSpec = { ...spec, ratio: spec.ratio, aspect: spec.aspect };
       return this.currentSpec;
     }
 
@@ -310,8 +310,8 @@ export class CameraController {
     return { sx: (width - sw) / 2, sy: (height - sh) / 2, sw, sh };
   }
 
-  /** Grabs a still at the current spec, including the digital crop. */
-  async capturePhoto(quality = 0.95): Promise<CapturedPhoto> {
+  /** Grabs a still at the current spec, including the digital crop and optional mirroring. */
+  async capturePhoto(quality = 0.95, mirror = false): Promise<CapturedPhoto> {
     const spec = this.currentSpec;
     const width = spec?.width ?? 1920;
     const height = spec?.height ?? 1080;
@@ -320,21 +320,34 @@ export class CameraController {
     canvas.height = height;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('无法创建画布');
-    this.drawFrame(ctx, width, height);
+    this.drawFrame(ctx, width, height, mirror);
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
     if (!blob) throw new Error('生成照片失败');
     return { blob, width, height };
   }
 
-  /** Draws the current video frame (cropped for digital zoom) into a 2D context. */
-  drawFrame(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  /**
+   * Draws the current video frame (cropped for digital zoom, optionally mirrored) into a 2D
+   * context.
+   *
+   * Mirroring happens here rather than in a CSS transform so that every consumer — the local
+   * preview, the stream sent to the Stage, the still and the recording pipeline — sees exactly
+   * the same pixels. A CSS flip would look right on screen and be inverted in the file.
+   */
+  drawFrame(ctx: CanvasRenderingContext2D, width: number, height: number, mirror = false): void {
     const source = this.videoSource();
     if (!source) return;
     const srcW = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
     const srcH = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
     if (!srcW || !srcH) return;
     const { sx, sy, sw, sh } = this.cropRect(srcW, srcH);
+    ctx.save();
+    if (mirror) {
+      ctx.translate(width, 0);
+      ctx.scale(-1, 1);
+    }
     ctx.drawImage(source as CanvasImageSource, sx, sy, sw, sh, 0, 0, width, height);
+    ctx.restore();
   }
 
   private videoSource(): HTMLVideoElement | HTMLCanvasElement | null {
@@ -352,19 +365,91 @@ export class CameraController {
     }
   }
 
-  /** Creates a `MediaRecorder` for the live stream. The caller owns the data handler. */
-  createRecorder(mimeType: string, bitsPerSecond = 12_000_000): MediaRecorder {
+  /**
+   * Re-attaches the live stream and resumes playback.
+   *
+   * Android suspends the WebView when the app goes to the background, and on resume the
+   * `<video>` element can end up with a detached `srcObject` showing a black rectangle — which
+   * is exactly the "退出应用后预览消失" report. Calling this from a `visibilitychange` handler
+   * brings the picture back without re-opening the camera (which would flash the permission
+   * dialog on some devices and take a second).
+   */
+  resume(): boolean {
+    const stream = this.stream;
+    const video = this.attachedVideo;
+    if (!stream || !video) return false;
+    const live = stream.getVideoTracks().some((t) => t.readyState === 'live');
+    if (!live) return false;
+    if (video.srcObject !== stream) video.srcObject = stream;
+    if (video.paused) void video.play().catch(() => undefined);
+    return true;
+  }
+
+  /** `true` when a live track is currently producing frames. */
+  get isLive(): boolean {
+    return Boolean(this.stream?.getVideoTracks().some((t) => t.readyState === 'live'));
+  }
+
+  /**
+   * Creates a `MediaRecorder` for the live stream. The caller owns the data handler.
+   *
+   * With `mirror` the recorder is fed from a canvas instead of the raw track, because a
+   * `MediaRecorder` records what the camera produces and CSS/canvas flips downstream would not
+   * reach the file. The canvas pipeline costs one extra copy per frame, so it is only built
+   * when the user actually asked for a mirrored recording.
+   */
+  createRecorder(mimeType: string, bitsPerSecond = 12_000_000, mirror = false): MediaRecorder {
     if (!this.stream) throw new Error('尚未打开摄像头');
     const options: MediaRecorderOptions = { mimeType };
     if (!mimeType.includes('png')) options.videoBitsPerSecond = bitsPerSecond;
+
+    let source = this.stream;
+    if (mirror) {
+      const canvas = document.createElement('canvas');
+      const spec = this.currentSpec;
+      canvas.width = Math.max(160, Math.round(spec?.width ?? 1280));
+      canvas.height = Math.max(90, Math.round(spec?.height ?? 720));
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (ctx) {
+        const paint = () => {
+          this.drawFrame(ctx, canvas.width, canvas.height, true);
+          this.recordingRaf = requestAnimationFrame(paint);
+        };
+        this.recordingRaf = requestAnimationFrame(paint);
+        source = canvas.captureStream(Math.min(60, Math.max(15, spec?.fps ?? 30)));
+        this.recordingCanvas = canvas;
+      }
+    }
+
+    let recorder: MediaRecorder;
     try {
-      return new MediaRecorder(this.stream, options);
+      recorder = new MediaRecorder(source, options);
     } catch {
-      return new MediaRecorder(this.stream);
+      recorder = new MediaRecorder(source);
+    }
+    // The canvas pipeline must stop with the recorder, or it keeps burning a rAF slot and a
+    // full-resolution draw for the rest of the session.
+    recorder.addEventListener('stop', () => this.stopRecordingPipeline());
+    recorder.addEventListener('error', () => this.stopRecordingPipeline());
+    return recorder;
+  }
+
+  private recordingRaf = 0;
+  private recordingCanvas: HTMLCanvasElement | null = null;
+
+  /** Tears down the mirror-recording canvas pipeline, if one is running. */
+  stopRecordingPipeline(): void {
+    if (this.recordingRaf) cancelAnimationFrame(this.recordingRaf);
+    this.recordingRaf = 0;
+    if (this.recordingCanvas) {
+      this.recordingCanvas.width = 0;
+      this.recordingCanvas.height = 0;
+      this.recordingCanvas = null;
     }
   }
 
   close(): void {
+    this.stopRecordingPipeline();
     if (this.synthetic) {
       cancelAnimationFrame(this.synthetic.raf);
       this.synthetic.canvas.width = 0;

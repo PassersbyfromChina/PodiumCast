@@ -56,6 +56,8 @@ function aspectOfDisplay(): DisplaySpec {
   };
 }
 
+const STAGE_SETTINGS_KEY = 'podiumcast.stage.settings';
+
 export async function startStage(): Promise<void> {
   const host = pickHost();
   const info: HostInfo = await host.info();
@@ -81,6 +83,27 @@ export async function startStage(): Promise<void> {
   const session = new StageSession({ bridge, store, identity, display: () => display });
   const toaster = new Toaster();
 
+  /**
+   * Stage-local view settings.
+   *
+   * The mirror switch lives here, not on the Cast, because "this screen shows a mirrored
+   * picture" is a property of this screen. Combined with the Cast's own two switches that
+   * gives the three independent controls the brief asks for: the Cast can mirror its preview
+   * and/or its recordings, and the Stage can mirror what it displays, in any combination.
+   */
+  const settings = loadSettings();
+  function loadSettings(): { mirror: boolean } {
+    try {
+      const raw = localStorage.getItem(STAGE_SETTINGS_KEY);
+      return { mirror: false, ...(raw ? (JSON.parse(raw) as { mirror?: boolean }) : {}) };
+    } catch { return { mirror: false } }
+  }
+  function saveSettings(): void {
+    try { localStorage.setItem(STAGE_SETTINGS_KEY, JSON.stringify(settings)) } catch { /* private mode */ }
+  }
+  /** Millis timestamp of the newest frame, used to flag a stale picture. */
+  let lastFrameAt = 0;
+
   // ================================================================ DOM
 
   const canvas = h('canvas', { class: 'preview' }) as HTMLCanvasElement;
@@ -99,6 +122,8 @@ export async function startStage(): Promise<void> {
   const recBadge = h('span', { class: 'rec-badge', hidden: true }, h('span', { class: 'dot' }), h('span', { class: 'mono', text: '00:00' }));
   const recTime = recBadge.lastElementChild as HTMLElement;
   const stateChip = h('span', { class: 'chip', hidden: true });
+  const mirrorChip = h('span', { class: 'chip warn', hidden: true },
+    icon('mirror', 'ico sm'), h('span', { text: '拍摄端已镜像' }));
 
   // Left drawer — capture controls (requirements.txt 二/2).
   const shutterBtn = h('button', { class: 'btn', type: 'button' }, icon('photo'), h('span', { text: '拍照' }));
@@ -109,9 +134,13 @@ export async function startStage(): Promise<void> {
     type: 'range', min: '1', max: '6', step: '0.1', value: '1', 'aria-label': '变焦',
     on: { input: () => sendZoom(Number(zoom.value)) },
   }) as HTMLInputElement;
+  const mirrorBtn = iconButton('mirror', '显示镜像', {
+    pressed: settings.mirror,
+    onclick: () => setMirror(!settings.mirror),
+  });
   const leftDrawer = h('div', { class: 'drawer', hidden: true },
     h('span', { class: 'drawer-title', text: '操控' }),
-    shutterBtn, recordBtn, playBtn,
+    shutterBtn, recordBtn, playBtn, mirrorBtn,
     h('div', { class: 'zoom-rail' },
       iconButton('zoomOut', '缩小', { cls: 'ghost icon', onclick: () => sendZoom(currentZoom() / 1.4) }),
       zoom, zoomLabel,
@@ -146,13 +175,26 @@ export async function startStage(): Promise<void> {
   stageArea.append(
     h('div', { class: 'corner left' }, leftDrawer, leftToggle),
     h('div', { class: 'corner right' }, rightDrawer, rightToggle),
-    h('div', { class: 'float-top' }, recBadge, stateChip, h('div', { class: 'spacer' })),
+    h('div', { class: 'float-top' }, recBadge, stateChip, mirrorChip, h('div', { class: 'spacer' })),
   );
 
   // ================================================================ PREVIEW RENDER
 
-  let pendingBitmap: ImageBitmap | null = null;
   let renderQueued = false;
+  let hasFrame = false;
+
+  /**
+   * Holds the most recent frame as pixels.
+   *
+   * The previous implementation kept a single `ImageBitmap` and closed it as soon as it had
+   * been painted, so the picture existed only in the compositor. Anything that invalidates that
+   * composited surface — resizing the window, the OS suspending the WebView when the app is
+   * backgrounded, a second monitor being attached — wiped the canvas back to black and left the
+   * big screen showing nothing until the next frame happened to arrive (and if the Cast had
+   * quit in the meantime, nothing ever did). Keeping the pixels lets the picture survive all of
+   * that, and an explicit status chip tells the user the feed is stale rather than pretending.
+   */
+  const frameStore = document.createElement('canvas');
 
   function sizeCanvas(): void {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -161,18 +203,26 @@ export async function startStage(): Promise<void> {
     if (canvas.width !== w || canvas.height !== h2) { canvas.width = w; canvas.height = h2 }
   }
 
-  function drawBitmap(bmp: ImageBitmap): void {
+  /** Paints the stored frame with `contain` letterboxing, honouring the local mirror switch. */
+  function paintStoredFrame(): void {
     if (!ctx) return;
     sizeCanvas();
     const cw = canvas.width;
     const ch = canvas.height;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, cw, ch);
+    if (!hasFrame || frameStore.width === 0) return;
     // `contain`: identical letterboxing to the Cast's own preview.
-    const scale = Math.min(cw / bmp.width, ch / bmp.height);
-    const dw = bmp.width * scale;
-    const dh = bmp.height * scale;
-    ctx.drawImage(bmp, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+    const scale = Math.min(cw / frameStore.width, ch / frameStore.height);
+    const dw = frameStore.width * scale;
+    const dh = frameStore.height * scale;
+    ctx.save();
+    if (settings.mirror) {
+      ctx.translate(cw, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(frameStore, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+    ctx.restore();
   }
 
   function scheduleRender(): void {
@@ -180,10 +230,23 @@ export async function startStage(): Promise<void> {
     renderQueued = true;
     requestAnimationFrame(() => {
       renderQueued = false;
-      const bmp = pendingBitmap;
-      pendingBitmap = null;
-      if (bmp) { drawBitmap(bmp); bmp.close() }
+      paintStoredFrame();
     });
+  }
+
+  /** Flips only this screen's copy of the picture; the Cast is not told and not affected. */
+  function setMirror(on: boolean): void {
+    settings.mirror = on;
+    saveSettings();
+    mirrorBtn.setAttribute('aria-pressed', String(on));
+    paintStoredFrame();
+    toaster.show(on ? '本机显示已镜像（不影响拍摄端）' : '本机显示镜像已关闭', 'info');
+  }
+
+  /** Re-paints from the stored frame; used after anything that can invalidate the canvas. */
+  function repaint(): void {
+    if (!hasFrame) return;
+    paintStoredFrame();
   }
 
   async function onPreview(jpeg: Uint8Array): Promise<void> {
@@ -191,8 +254,14 @@ export async function startStage(): Promise<void> {
       // Copy into a standalone buffer: the transport buffer is recycled by the socket.
       const copy = jpeg.slice();
       const bmp = await createImageBitmap(new Blob([copy], { type: 'image/jpeg' }));
-      pendingBitmap?.close();
-      pendingBitmap = bmp;
+      if (frameStore.width !== bmp.width || frameStore.height !== bmp.height) {
+        frameStore.width = bmp.width;
+        frameStore.height = bmp.height;
+      }
+      frameStore.getContext('2d')?.drawImage(bmp, 0, 0);
+      bmp.close();
+      hasFrame = true;
+      lastFrameAt = Date.now();
       placeholder.hidden = true;
       scheduleRender();
     } catch { /* a single corrupt frame is not worth surfacing */ }
@@ -240,6 +309,9 @@ export async function startStage(): Promise<void> {
 
   session.events.on('state', (state) => {
     current = state;
+    const wasMirrored = mirrorChip.hidden;
+    mirrorChip.hidden = !state.mirrorPreview;
+    if (wasMirrored && state.mirrorPreview) toaster.show('拍摄端已开启预览镜像', 'info');
     recBadge.hidden = !state.recording;
     recTime.textContent = formatDuration(state.recordingMs);
     setRecordButton(state.recording);
@@ -419,6 +491,14 @@ export async function startStage(): Promise<void> {
       h('div', { class: 'hint', text: '选择「存本机」后，拍摄端录完会自动把文件传过来；也可以在大屏端手动拉取。' }),
     ),
     h('div', { class: 'field' },
+      h('span', { class: 'label', text: '显示镜像' }),
+      h('div', { class: 'seg' },
+        h('button', { type: 'button', text: '不镜像', 'aria-pressed': String(!settings.mirror), on: { click: () => setMirror(false) } }),
+        h('button', { type: 'button', text: '镜像显示', 'aria-pressed': String(settings.mirror), on: { click: () => setMirror(true) } }),
+      ),
+      h('div', { class: 'hint', text: '只影响这块大屏显示的画面，不会改变拍摄端录下的文件，也不影响拍摄端自己的预览。' }),
+    ),
+    h('div', { class: 'field' },
       h('span', { class: 'label', text: '显示' }),
       h('div', { class: 'seg' },
         h('button', { type: 'button', text: '全屏', on: { click: () => { void host.setFullscreen(true) } } }),
@@ -455,6 +535,7 @@ export async function startStage(): Promise<void> {
       case 'l': case 'L': ev.preventDefault(); void openLibrary(); break;
       case 'c': case 'C': ev.preventDefault(); connectionPanel.toggle(); break;
       case 'f': case 'F': ev.preventDefault(); void host.setFullscreen(!document.fullscreenElement); break;
+      case 'm': case 'M': ev.preventDefault(); setMirror(!settings.mirror); break;
       case 'ArrowUp': ev.preventDefault(); sendZoom(currentZoom() * 1.2); break;
       case 'ArrowDown': ev.preventDefault(); sendZoom(currentZoom() / 1.2); break;
       default: break;
@@ -463,6 +544,9 @@ export async function startStage(): Promise<void> {
 
   const onResize = debounce(() => {
     sizeCanvas();
+    // The canvas bitmap is cleared whenever its backing store is resized, so the stored frame
+    // has to be painted back or the big screen goes black on every window resize.
+    repaint();
     // A window move can land on a different monitor: tell the Cast so it can re-match.
     void host.display().then((d) => {
       display = d;
@@ -472,6 +556,9 @@ export async function startStage(): Promise<void> {
   }, 350);
   window.addEventListener('resize', onResize);
   window.addEventListener('beforeunload', () => session.dispose());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') repaint();
+  });
 
   // ================================================================ BOOT
 

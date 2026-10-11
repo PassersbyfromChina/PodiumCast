@@ -10,6 +10,14 @@ import { ALIASES, APP_VERSION, UI_SRC, banner, reportResult } from './build-comm
 
 export const ROLE_TITLE = { cast: 'PodiumCast Cast', stage: 'PodiumCast Stage' };
 
+/** The brand mark, kept identical to scripts/make-icons.py so every surface matches. */
+export const BRAND_SVG =
+  "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
+  "<rect width='64' height='64' rx='14' fill='#08080a'/>" +
+  "<circle cx='32' cy='32' r='21.4' fill='none' stroke='#f2f2f4' stroke-width='5.4'/>" +
+  "<circle cx='32' cy='32' r='11.2' fill='#ff3b30'/>" +
+  "</svg>";
+
 /**
  * The document both hosts load.
  *
@@ -32,7 +40,7 @@ export function indexHtml(role, { capacitor = false } = {}) {
 <meta name="description" content="${title} — PodiumCast 多平台摄像头投屏与拍摄控制">
 <title>${title}</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:${mediaScheme}; media-src 'self' blob: data:${mediaScheme}; connect-src 'self' ws: wss:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23000'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23ff3b30'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(BRAND_SVG)}">
 <link rel="stylesheet" href="./app.css">
 </head>
 <body>

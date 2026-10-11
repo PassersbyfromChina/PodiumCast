@@ -1,6 +1,6 @@
 {
   "name": "podiumcast",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "PodiumCast — 多平台摄像头投屏与拍摄控制套件（Cast 拍摄端 + Stage 大屏端），覆盖 Windows x64/x86/ARM64、macOS 与 Android。",
   "keywords": [
@@ -54,6 +54,9 @@
     "serve:pages": "node scripts/serve-pages.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:ui": "node scripts/verify-ui.mjs",
+    "verify:roles": "node scripts/verify-roles.mjs",
+    "diagnose:layout": "node scripts/diagnose-layout.mjs",
+    "icons": "python scripts/make-icons.py",
     "smoke": "node scripts/smoke-test.mjs"
   },
   "devDependencies": {

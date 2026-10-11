@@ -58,6 +58,9 @@ apps/android/android/app/podiumcast.keystore
 _tmp/
 _dump*
 scripts/toolchain/.cache/
+# Python bytecode left behind when a harness imports scripts/make-icons.py.
+__pycache__/
+*.pyc
 Thumbs.db
 desktop.ini
 .DS_Store

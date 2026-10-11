@@ -138,6 +138,13 @@ export interface SessionState {
   storageTarget: StorageTarget;
   photoCount: number;
   videoCount: number;
+  /**
+   * Cast side: the local preview *and* the streamed preview are flipped. Reported to the Stage
+   * so it can label what it is showing instead of silently presenting a mirrored picture.
+   */
+  mirrorPreview: boolean;
+  /** Cast side: recorded photos and videos are flipped too (off by default). */
+  mirrorCapture: boolean;
   /** Playback state, only meaningful when `mode === 'playback'`. */
   playback: {
     fileId: string | null;

@@ -94,6 +94,10 @@ export const ICONS = {
   fullscreen: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   wifi: '<path d="M2.5 9.5a14 14 0 0119 0M5.5 13a10 10 0 0113 0M8.5 16.4a5.6 5.6 0 017 0"/><circle cx="12" cy="19.5" r="1"/>',
+  /** Horizontal flip: two mirrored wedges around a dashed axis. */
+  mirror: '<path d="M12 3v18" stroke-dasharray="2.5 2.5"/><path d="M9.6 7.2L4 12l5.6 4.8z"/><path d="M14.4 7.2L20 12l-5.6 4.8z"/>',
+  /** A ring with a filled centre — the PodiumCast mark, usable as an inline brand glyph. */
+  brand: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.4" fill="currentColor" stroke="none"/>',
 } as const;
 
 export function icon(name: keyof typeof ICONS, cls = 'ico'): SVGSVGElement {

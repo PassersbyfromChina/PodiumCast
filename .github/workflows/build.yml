@@ -61,6 +61,39 @@ jobs:
       - name: 端到端冒烟测试（握手 / 比例匹配 / 远端指令 / 预览帧 / 文件互传）
         run: npm run smoke
 
+  # ---------------------------------------------------------------------------- layout
+  # The regression that shipped in v1.0.0 — the control bar overflowing and silently clipping
+  # buttons on every non-16:9 screen — passed every DOM-based test. Only geometry catches it, so
+  # real Electron windows are measured at six viewport sizes (phone-landscape through 1080p)
+  # under Xvfb.
+  #
+  # Deliberately NOT a dependency of `release`: a GPU-less rendering environment is a flakier
+  # place to measure pixels than it is to assert protocol behaviour, and a spurious failure here
+  # must not block publishing an otherwise good build. It still shows up red in the run summary.
+  layout:
+    name: 多尺寸布局回归
+    needs: checks
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 构建渲染层
+        run: npm run build:desktop
+      - name: 六个尺寸下测量控件条几何
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run diagnose:layout
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: layout-report
+          path: .podiumcast-out/layout-shots
+          if-no-files-found: ignore
+          retention-days: 14
+
   # ---------------------------------------------------------------------------- windows
   windows:
     name: Windows 安装包 (x64 / x86 / ARM64)

@@ -72,6 +72,8 @@ export function defaultState(overrides: Partial<SessionState> = {}): SessionStat
     storageTarget: 'cast',
     photoCount: 0,
     videoCount: 0,
+    mirrorPreview: false,
+    mirrorCapture: false,
     playback: { fileId: null, playing: false, positionMs: 0, durationMs: 0, rate: 1, scale: 1 },
     ...overrides,
   };

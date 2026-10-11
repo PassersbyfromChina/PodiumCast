@@ -36,6 +36,16 @@
 
 * { box-sizing: border-box; }
 
+/*
+ * The `hidden` attribute must win.
+ *
+ * The UA rule is `[hidden] { display: none }` — a single class selector, so ANY component rule
+ * that sets `display` (`.rec-badge { display: inline-flex }`, `.chip`, …) silently overrides it
+ * and the element stays on screen. That is how the recording badge kept showing "00:00" while
+ * idle and pushed the phone-landscape control column past the bottom of the band.
+ */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -194,31 +204,89 @@ svg { display: block; }
 }
 .preview.hidden { visibility: hidden; }
 
+/**
+ * The control band.
+ *
+ * This used to be a rigid CSS grid with `repeat(var(--bar-slots), 1fr)` columns/rows and
+ * `overflow: hidden`. The slot count came from the band thickness while the child count came
+ * from the feature list, and the two never agreed — on a 780×360 phone the band got 2 slots
+ * for 5 blocks, so three rows were laid out inside a two-row box and the overflow was simply
+ * clipped away. `overflow: hidden` turned a layout bug into silently missing buttons.
+ *
+ * Now it is a wrapping flex row: children shrink before they wrap, nothing is ever clipped,
+ * and `--bar-slots` only chooses a *density tier* rather than dictating a grid. If even the
+ * compact tier does not fit, the content scrolls instead of disappearing.
+ */
 .bar {
   grid-area: bar;
-  display: grid;
-  gap: 8px;
-  padding: var(--pad);
-  background: #000;
+  display: flex;
+  flex-wrap: wrap;
   align-content: center;
-  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 8px;
+  padding: calc(var(--pad) + env(safe-area-inset-top, 0px)) calc(var(--pad) + env(safe-area-inset-right, 0px))
+           calc(var(--pad) + env(safe-area-inset-bottom, 0px)) calc(var(--pad) + env(safe-area-inset-left, 0px));
+  background: #000;
+  /* `auto`, never `hidden`: a control that does not fit must remain reachable. */
+  overflow: auto;
+  overscroll-behavior: contain;
   min-width: 0;
   min-height: 0;
+  scrollbar-width: thin;
 }
-/* Vertical band: buttons fill columns, wrapping when the band is thick enough. */
+.bar > * {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* Vertical band (controls beside the preview): stack the groups in a column. */
 #app.cast[data-layout="split-h"] .bar {
-  grid-auto-flow: column;
-  grid-template-columns: repeat(var(--bar-slots, 1), minmax(0, 1fr));
-  justify-items: stretch;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  justify-content: center;
 }
-/* Horizontal band: buttons fill rows. */
+/* Horizontal band (controls above/below the preview): lay the groups out in a row. */
 #app.cast[data-layout="split-v"] .bar {
-  grid-template-rows: repeat(var(--bar-slots, 1), minmax(0, 1fr));
-  grid-auto-flow: row;
-  justify-items: stretch;
+  flex-direction: row;
 }
 .bar .bar-group { display: contents; }
-.bar .bar-row { display: flex; gap: 8px; align-items: center; }
+.bar .bar-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; min-width: 0; }
+
+/* ------------------------------------------------------------------ density tiers
+ *
+ * 要求.txt asks for the number of control rows to follow the size of the black band. The band
+ * is often only one icon tall on a phone in landscape, so the controls shed detail in three
+ * steps rather than being clipped:
+ *
+ *   roomy   (band ≥ 128px)  labels + zoom slider + two-line readout
+ *   cozy    (band ≥  88px)  labels + narrower slider + one-line readout
+ *   compact (band <   88px) icon-only buttons (tooltips keep them discoverable) + ＋/－ zoom
+ */
+#app[data-density="cozy"] .btn { padding: 0 10px; min-height: 38px; }
+#app[data-density="cozy"] .readout { font-size: 11.5px; }
+#app[data-density="cozy"] .zoom-rail { min-width: 108px; }
+
+#app[data-density="compact"] .btn { padding: 0; min-width: 38px; min-height: 38px; }
+/* Icon-only: the label stays in the DOM for `aria-label`/tooltip purposes but is not painted,
+ * so a 38px square button reads at a glance without a caption underneath it. */
+#app[data-density="compact"] .btn > span { display: none; }
+#app[data-density="compact"] .btn.accent { min-width: 46px; }
+#app[data-density="compact"] .readout .line + .line { display: none; }
+#app[data-density="compact"] .readout { font-size: 11px; }
+#app[data-density="compact"] .zoom-rail { min-width: 0; }
+#app[data-density="compact"] .chip { height: 20px; padding: 0 7px; font-size: 11px; }
+
+/* The rec badge and the peer chip are one wrapping unit. */
+.bar-status { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center; min-width: 0; }
+
+/* A narrow vertical band has no horizontal room to spare: the zoom slider and the numeric
+ * readout are the first things to go, leaving a column of square, thumb-sized buttons. */
+#app.cast[data-layout="split-h"][data-density="compact"] .bar { padding-left: 5px; padding-right: 5px; gap: 5px; }
+#app.cast[data-layout="split-h"][data-density="compact"] .zoom-rail input[type="range"] { display: none; }
+#app.cast[data-layout="split-h"][data-density="compact"] .zoom-rail .val { display: none; }
+#app.cast[data-layout="split-h"][data-density="compact"] .zoom-rail { flex-direction: column; min-width: 0; gap: 4px; }
+#app.cast[data-layout="split-h"] .bar-row { flex-direction: column; flex-wrap: nowrap; gap: 5px; }
 
 /* Perfect fit: the controls float over the picture instead of living in a band. */
 .float-layer {
@@ -233,7 +301,10 @@ svg { display: block; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  /* Safe-area padding matters most in landscape, where a notch or rounded corner sits on the
+   * left or right edge and would otherwise clip the readout or the status chips. */
+  padding: calc(10px + env(safe-area-inset-top, 0px)) calc(12px + env(safe-area-inset-right, 0px))
+           10px calc(12px + env(safe-area-inset-left, 0px));
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
 }
 .float-bottom {
@@ -243,8 +314,9 @@ svg { display: block; }
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 14px 12px;
+  padding: 14px calc(12px + env(safe-area-inset-right, 0px)) calc(14px + env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px));
   background: linear-gradient(0deg, rgba(0, 0, 0, 0.68), rgba(0, 0, 0, 0));
+  flex-wrap: wrap;
 }
 .float-left, .float-right {
   position: absolute;
@@ -254,8 +326,8 @@ svg { display: block; }
   flex-direction: column;
   gap: 10px;
 }
-.float-left { left: 12px; }
-.float-right { right: 12px; }
+.float-left { left: calc(12px + env(safe-area-inset-left, 0px)); }
+.float-right { right: calc(12px + env(safe-area-inset-right, 0px)); }
 
 .spacer { flex: 1 1 auto; min-width: 8px; }
 
@@ -269,9 +341,11 @@ svg { display: block; }
   color: var(--fg-dim);
   line-height: 1.3;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .readout b { color: var(--fg); font-weight: 600; }
-.readout .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 
 /* ------------------------------------------------------------------ stage drawers */
 
@@ -420,6 +494,23 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .kv dd { margin: 0; word-break: break-all; }
 
 .spec-list { display: flex; flex-direction: column; gap: 6px; }
+
+/* ------------------------------------------------------------------ format picker
+ * Three short rows — 比例 / 清晰度 / 帧率 — the way a camera app presents its modes, instead of
+ * the ~28-row hardware table the first release showed.
+ */
+.picker { display: flex; flex-direction: column; gap: 10px; }
+.picker-row { display: flex; align-items: center; gap: 10px; }
+.picker-label { flex: 0 0 42px; font-size: 12px; color: var(--fg-faint); }
+.picker-row .seg { flex: 1 1 auto; }
+.picker-row .seg button { flex: 1 1 auto; text-align: center; }
+.picker-row .seg button:disabled { opacity: 0.32; cursor: not-allowed; text-decoration: line-through; }
+.picker-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.advanced { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.advanced > summary { cursor: pointer; font-size: 12px; color: var(--fg-dim); list-style: none; }
+.advanced > summary::before { content: '▸ '; color: var(--fg-faint); }
+.advanced[open] > summary::before { content: '▾ '; }
+.advanced > .spec-list { margin-top: 10px; max-height: 240px; overflow: auto; padding-right: 4px; }
 .spec-item {
   display: flex;
   align-items: center;
@@ -605,9 +696,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 168px;
+  /* Was a hard 168px, which is wider than the entire band on a phone in landscape and pushed
+   * the buttons out of the bar. It shrinks now; the density tiers decide how far. */
+  min-width: 0;
 }
-.zoom-rail .val { font-family: var(--mono); font-size: 12.5px; color: var(--fg-dim); min-width: 40px; text-align: right; }
+.zoom-rail input[type="range"] { flex: 1 1 auto; min-width: 56px; width: auto; }
+.zoom-rail .val { font-family: var(--mono); font-size: 12px; color: var(--fg-dim); min-width: 34px; text-align: right; }
 
 @media (max-width: 720px) {
   :root { --row: 46px; --pad: 9px; }
